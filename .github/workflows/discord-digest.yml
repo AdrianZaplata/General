@@ -1,0 +1,67 @@
+name: Post Digest to Discord
+
+on:
+  push:
+    paths:
+      - 'digests/*.md'
+
+jobs:
+  post-to-discord:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Find new digest file
+        id: find-digest
+        run: |
+          # Get the most recently added/modified digest file
+          FILE=$(git diff --name-only HEAD~1 HEAD -- 'digests/*.md' | head -1)
+          if [ -z "$FILE" ]; then
+            echo "No new digest file found"
+            exit 0
+          fi
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "Found digest: $FILE"
+
+      - name: Post to Discord
+        if: steps.find-digest.outputs.file
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          FILE="${{ steps.find-digest.outputs.file }}"
+
+          # Read the file content
+          CONTENT=$(cat "$FILE")
+
+          # Split on the --- separator into TL;DR and Details
+          TLDR=$(echo "$CONTENT" | awk '/^---$/{found=1; next} !found')
+          DETAILS=$(echo "$CONTENT" | awk '/^---$/{found=1; next} found')
+
+          # Post TL;DR message
+          echo "$TLDR" | python3 -c "
+          import json, sys
+          content = sys.stdin.read().strip()
+          if content:
+              # Truncate to 2000 chars if needed
+              if len(content) > 2000:
+                  content = content[:1997] + '...'
+              payload = json.dumps({'content': content})
+              print(payload)
+          " | curl -s -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL"
+
+          sleep 2
+
+          # Post Details message (if non-empty)
+          echo "$DETAILS" | python3 -c "
+          import json, sys
+          content = sys.stdin.read().strip()
+          if content:
+              if len(content) > 2000:
+                  content = content[:1997] + '...'
+              payload = json.dumps({'content': content})
+              print(payload)
+          " | curl -s -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL"
+
+          echo "Digest posted to Discord!"
