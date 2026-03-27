@@ -32,36 +32,53 @@ jobs:
         run: |
           FILE="${{ steps.find-digest.outputs.file }}"
 
-          # Read the file content
-          CONTENT=$(cat "$FILE")
+          python3 << 'PYEOF'
+          import json, subprocess, time, os
 
-          # Split on the --- separator into TL;DR and Details
-          TLDR=$(echo "$CONTENT" | awk '/^---$/{found=1; next} !found')
-          DETAILS=$(echo "$CONTENT" | awk '/^---$/{found=1; next} found')
+          webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
 
-          # Post TL;DR message
-          echo "$TLDR" | python3 -c "
-          import json, sys
-          content = sys.stdin.read().strip()
-          if content:
-              # Truncate to 2000 chars if needed
-              if len(content) > 2000:
-                  content = content[:1997] + '...'
-              payload = json.dumps({'content': content})
-              print(payload)
-          " | curl -s -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL"
+          with open("${{ steps.find-digest.outputs.file }}", "r") as f:
+              content = f.read().strip()
 
-          sleep 2
+          # Split on --- separators into sections
+          sections = [s.strip() for s in content.split("\n---\n") if s.strip()]
 
-          # Post Details message (if non-empty)
-          echo "$DETAILS" | python3 -c "
-          import json, sys
-          content = sys.stdin.read().strip()
-          if content:
-              if len(content) > 2000:
-                  content = content[:1997] + '...'
-              payload = json.dumps({'content': content})
-              print(payload)
-          " | curl -s -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL"
+          # Build messages that fit within 2000 chars
+          messages = []
+          current = ""
+          for section in sections:
+              # If adding this section would exceed limit, flush current
+              if current and len(current) + len("\n\n") + len(section) > 1900:
+                  messages.append(current)
+                  current = section
+              elif current:
+                  current += "\n\n---\n\n" + section
+              else:
+                  current = section
 
-          echo "Digest posted to Discord!"
+              # If single section is too long, split it further
+              while len(current) > 1900:
+                  # Find last newline before 1900 chars
+                  split_at = current.rfind("\n", 0, 1900)
+                  if split_at == -1:
+                      split_at = 1900
+                  messages.append(current[:split_at])
+                  current = current[split_at:].strip()
+
+          if current:
+              messages.append(current)
+
+          # Post each message to Discord
+          for i, msg in enumerate(messages):
+              payload = json.dumps({"content": msg})
+              result = subprocess.run(
+                  ["curl", "-s", "-w", "%{http_code}", "-H", "Content-Type: application/json",
+                   "-d", payload, webhook_url],
+                  capture_output=True, text=True
+              )
+              print(f"Message {i+1}/{len(messages)}: HTTP {result.stdout[-3:]}")
+              if i < len(messages) - 1:
+                  time.sleep(2)
+
+          print(f"Posted {len(messages)} messages to Discord!")
+          PYEOF
