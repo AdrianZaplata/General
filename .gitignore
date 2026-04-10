@@ -1,0 +1,11 @@
+# Claude Code / agent session state
+.claude/
+
+# BMAD working directories
+_bmad/
+_bmad-output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
